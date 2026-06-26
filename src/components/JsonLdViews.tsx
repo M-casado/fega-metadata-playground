@@ -19,7 +19,9 @@ export function JsonLdViews({ example, draft }: JsonLdViewsProps) {
           { key: 'source' as const, label: 'Draft wrapper', path: '', type: 'draft-json' },
           { key: 'data' as const, label: 'Draft data', path: '', type: 'draft-data' },
           { key: 'expanded' as const, label: 'Expanded JSON-LD', path: '', type: 'draft-expanded' },
-          { key: 'flattened' as const, label: 'Flattened JSON-LD', path: '', type: 'draft-flattened' }
+          { key: 'flattened' as const, label: 'Flattened JSON-LD', path: '', type: 'draft-flattened' },
+          { key: 'framed' as const, label: 'Framed JSON-LD', path: '', type: 'draft-framed' },
+          { key: 'nquads' as const, label: 'N-Quads', path: '', type: 'draft-nquads' }
         ];
       }
       return [
@@ -57,9 +59,13 @@ export function JsonLdViews({ example, draft }: JsonLdViewsProps) {
             ? jsonld.expand(draft?.data ?? {}).then(formatJson)
             : view.type === 'draft-flattened'
               ? jsonld.flatten(draft?.data ?? {}).then(formatJson)
-              : view.type === 'json'
-                ? loadJsonAsset(view.path || '').then(formatJson)
-                : loadTextAsset(view.path || '');
+              : view.type === 'draft-framed'
+                ? jsonld.frame(draft?.data ?? {}, frameForDraft(draft)).then(formatJson)
+                : view.type === 'draft-nquads'
+                  ? jsonld.toRDF(draft?.data ?? {}, { format: 'application/n-quads' })
+                  : view.type === 'json'
+                    ? loadJsonAsset(view.path || '').then(formatJson)
+                    : loadTextAsset(view.path || '');
     load
       .then((value: string) => {
         if (!cancelled) {
@@ -104,4 +110,66 @@ export function JsonLdViews({ example, draft }: JsonLdViewsProps) {
       {error ? <div className="warningLine">{error}</div> : <pre className="codeBlock">{content || 'Loading…'}</pre>}
     </section>
   );
+}
+
+function frameForDraft(draft: WorkingDraft | null) {
+  const data = draft?.data;
+  const context = firstContext(data) || schemaRef(draft?.schema);
+  const type = firstEgaType(data);
+  return {
+    ...(context ? { '@context': context } : {}),
+    ...(type ? { '@type': type } : {})
+  };
+}
+
+function firstContext(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const context = firstContext(item);
+      if (context) {
+        return context;
+      }
+    }
+    return undefined;
+  }
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (record['@context']) {
+    return record['@context'];
+  }
+  if (Array.isArray(record['@graph'])) {
+    return firstContext(record['@graph']);
+  }
+  return undefined;
+}
+
+function firstEgaType(value: unknown): string {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const type = firstEgaType(item);
+      if (type) {
+        return type;
+      }
+    }
+    return '';
+  }
+  if (!value || typeof value !== 'object') {
+    return '';
+  }
+  const record = value as Record<string, unknown>;
+  const types = Array.isArray(record['@type']) ? record['@type'] : [record['@type']];
+  const egaType = types.find((type) => typeof type === 'string' && type.startsWith('ega:'));
+  if (typeof egaType === 'string') {
+    return egaType;
+  }
+  if (Array.isArray(record['@graph'])) {
+    return firstEgaType(record['@graph']);
+  }
+  return '';
+}
+
+function schemaRef(schema: unknown): string {
+  return schema && typeof schema === 'object' && typeof (schema as Record<string, unknown>).$ref === 'string' ? String((schema as Record<string, unknown>).$ref) : '';
 }

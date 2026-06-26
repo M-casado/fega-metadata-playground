@@ -1,13 +1,14 @@
 import cytoscape, { Core, ElementDefinition } from 'cytoscape';
+import jsonld from 'jsonld';
 import { Focus, RefreshCw, Search } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { simpleGraphFromWorkingDraft } from '../lib/draft';
 import { loadJsonAsset } from '../lib/examples';
 import { cytoscapeDataForEgaType } from '../lib/fegaStyles';
+import { augmentRdfGraphWithBuilder, expandByRadius, filterRdfGraph, graphFromNQuads } from '../lib/rdfGraph';
 import type { GraphAsset, GraphEdge, GraphNode, ManifestExample, SimpleGraphAsset, SimpleGraphEdge, SimpleGraphNode, WorkingDraft } from '../lib/types';
 import { InspectorPanel } from './InspectorPanel';
 
-const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 type GraphMode = 'ega' | 'rdf';
 
 interface GraphViewerProps {
@@ -23,7 +24,7 @@ export function GraphViewer({ example, draft }: GraphViewerProps) {
   const [compactLabels, setCompactLabels] = useState(true);
   const [showLiterals, setShowLiterals] = useState(true);
   const [showBlankNodes, setShowBlankNodes] = useState(true);
-  const [showTypeEdges, setShowTypeEdges] = useState(false);
+  const [showTypeEdges, setShowTypeEdges] = useState(true);
   const [predicateFilter, setPredicateFilter] = useState('');
   const [searchText, setSearchText] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
@@ -41,6 +42,25 @@ export function GraphViewer({ example, draft }: GraphViewerProps) {
     setError('');
     setSelectedNode(null);
     setSelectedEdge(null);
+
+    if (draft) {
+      jsonld
+        .toRDF(draft.data ?? {}, { format: 'application/n-quads' })
+        .then((nquads) => {
+          if (!cancelled) {
+            setRdfGraph(augmentRdfGraphWithBuilder(graphFromNQuads(nquads), draft));
+          }
+        })
+        .catch((reason) => {
+          if (!cancelled) {
+            const message = reason instanceof Error ? reason.message : String(reason);
+            setRdfGraph(augmentRdfGraphWithBuilder({ nodes: [], edges: [], warnings: [`draft nquads: ${message}`] }, draft));
+          }
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
 
     const simplePath = example.assets.simpleGraph || example.assets.graph;
     const rdfPath = example.assets.rdfGraph;
@@ -64,6 +84,24 @@ export function GraphViewer({ example, draft }: GraphViewerProps) {
       cancelled = true;
     };
   }, [draft, example]);
+
+  useEffect(() => {
+    if (mode === 'rdf') {
+      setShowTypeEdges(true);
+    }
+  }, [mode]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') {
+      return undefined;
+    }
+    const observer = new ResizeObserver(() => {
+      cyRef.current?.resize();
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
 
   const filteredSimple = useMemo(() => {
     if (!simpleGraph) {
@@ -98,73 +136,31 @@ export function GraphViewer({ example, draft }: GraphViewerProps) {
       edges = edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
     }
 
-    if (selectedOnly && selectedNode) {
-      const visibleIds = expandByRadius(new Set([selectedNode.id]), edges, 1);
+    const selectedNodeId = selectedOnly ? selectedNode?.id : '';
+    if (selectedNodeId) {
+      const visibleIds = expandByRadius(new Set([selectedNodeId]), edges, 1);
       nodes = nodes.filter((node) => visibleIds.has(node.id));
       edges = edges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target));
     }
 
     return { nodes, edges };
-  }, [searchText, selectedNode, selectedOnly, simpleGraph, typeFilter, typeRadius]);
+  }, [searchText, selectedOnly, selectedOnly ? selectedNode?.id : '', simpleGraph, typeFilter, typeRadius]);
 
   const filteredRdf = useMemo(() => {
     if (!rdfGraph) {
       return { nodes: [] as GraphNode[], edges: [] as GraphEdge[] };
     }
-    const searchNeedle = searchText.trim().toLowerCase();
-    const predicateNeedle = predicateFilter.trim().toLowerCase();
-    const typeNeedle = typeFilter.trim().toLowerCase();
-    let nodes = rdfGraph.nodes.filter((node) => {
-      if (!showLiterals && node.kind === 'literal') {
-        return false;
-      }
-      if (!showBlankNodes && node.kind === 'blank') {
-        return false;
-      }
-      if (typeNeedle && ![...(node.compactTypes || []), ...(node.types || [])].join(' ').toLowerCase().includes(typeNeedle)) {
-        return false;
-      }
-      return true;
+    return filterRdfGraph(rdfGraph, {
+      showLiterals,
+      showBlankNodes,
+      showTypeEdges,
+      predicateFilter,
+      searchText,
+      typeFilter,
+      selectedOnly,
+      selectedNodeId: selectedOnly ? selectedNode?.id : undefined
     });
-    let nodeIds = new Set(nodes.map((node) => node.id));
-    let edges = rdfGraph.edges.filter((edge) => {
-      if (!showTypeEdges && edge.predicate === RDF_TYPE) {
-        return false;
-      }
-      if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
-        return false;
-      }
-      const predicateHaystack = `${edge.compactPredicate} ${edge.predicate}`.toLowerCase();
-      return !predicateNeedle || predicateHaystack.includes(predicateNeedle);
-    });
-
-    if (searchNeedle) {
-      const matchingIds = new Set(
-        nodes
-          .filter((node) =>
-            [node.id, node.label, node.value, node.compactValue, ...(node.compactTypes || []), ...(node.types || [])].join(' ').toLowerCase().includes(searchNeedle)
-          )
-          .map((node) => node.id)
-      );
-      edges.forEach((edge) => {
-        if (`${edge.compactPredicate} ${edge.predicate}`.toLowerCase().includes(searchNeedle)) {
-          matchingIds.add(edge.source);
-          matchingIds.add(edge.target);
-        }
-      });
-      nodes = nodes.filter((node) => matchingIds.has(node.id));
-      nodeIds = new Set(nodes.map((node) => node.id));
-      edges = edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
-    }
-
-    if (selectedOnly && selectedNode) {
-      const visibleIds = expandByRadius(new Set([selectedNode.id]), edges, 1);
-      nodes = nodes.filter((node) => visibleIds.has(node.id));
-      nodeIds = new Set(nodes.map((node) => node.id));
-      edges = edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
-    }
-    return { nodes, edges };
-  }, [predicateFilter, rdfGraph, searchText, selectedNode, selectedOnly, showBlankNodes, showLiterals, showTypeEdges, typeFilter]);
+  }, [predicateFilter, rdfGraph, searchText, selectedOnly, selectedOnly ? selectedNode?.id : '', showBlankNodes, showLiterals, showTypeEdges, typeFilter]);
 
   const activeGraph = mode === 'ega' ? simpleGraph : rdfGraph;
   const filtered = mode === 'ega' ? filteredSimple : filteredRdf;
@@ -237,9 +233,10 @@ export function GraphViewer({ example, draft }: GraphViewerProps) {
         ] as unknown as cytoscape.StylesheetCSS[]
       });
     cyRef.current = cy;
+    cy.resize();
     cy.elements().remove();
     cy.add(elements);
-    cy.layout({ name: mode === 'ega' ? 'breadthfirst' : 'cose', animate: false, idealEdgeLength: 125, nodeRepulsion: 6500, padding: 30 }).run();
+    cy.layout(layoutOptionsForMode(mode, false)).run();
 
     cy.removeAllListeners();
     cy.on('tap', 'node', (event) => {
@@ -284,7 +281,14 @@ export function GraphViewer({ example, draft }: GraphViewerProps) {
           <button className={mode === 'ega' ? 'activeTab' : ''} type="button" onClick={() => setMode('ega')}>
             EGA graph
           </button>
-          <button className={mode === 'rdf' ? 'activeTab' : ''} type="button" onClick={() => setMode('rdf')}>
+          <button
+            className={mode === 'rdf' ? 'activeTab' : ''}
+            type="button"
+            onClick={() => {
+              setShowTypeEdges(true);
+              setMode('rdf');
+            }}
+          >
             RDF detail
           </button>
         </div>
@@ -292,14 +296,25 @@ export function GraphViewer({ example, draft }: GraphViewerProps) {
           <input type="checkbox" checked={compactLabels} onChange={(event) => setCompactLabels(event.target.checked)} />
           Compact labels
         </label>
-        <button className="iconButton" type="button" title="Fit graph" onClick={() => cyRef.current?.fit(undefined, 40)}>
+        <button
+          className="iconButton"
+          type="button"
+          title="Fit graph"
+          onClick={() => {
+            cyRef.current?.resize();
+            cyRef.current?.fit(undefined, 40);
+          }}
+        >
           <Focus size={17} aria-hidden="true" />
         </button>
         <button
           className="iconButton"
           type="button"
           title="Re-run graph layout"
-          onClick={() => cyRef.current?.layout({ name: mode === 'ega' ? 'breadthfirst' : 'cose', animate: true, animationDuration: 260 }).run()}
+          onClick={() => {
+            cyRef.current?.resize();
+            cyRef.current?.layout(layoutOptionsForMode(mode, true)).run();
+          }}
         >
           <RefreshCw size={16} aria-hidden="true" />
         </button>
@@ -385,25 +400,6 @@ export function GraphViewer({ example, draft }: GraphViewerProps) {
   );
 }
 
-function expandByRadius(seedIds: Set<string>, edges: Array<{ source: string; target: string }>, radius: number) {
-  const visible = new Set(seedIds);
-  let frontier = new Set(seedIds);
-  for (let step = 0; step < radius; step += 1) {
-    const next = new Set<string>();
-    edges.forEach((edge) => {
-      if (frontier.has(edge.source)) {
-        next.add(edge.target);
-      }
-      if (frontier.has(edge.target)) {
-        next.add(edge.source);
-      }
-    });
-    next.forEach((id) => visible.add(id));
-    frontier = next;
-  }
-  return visible;
-}
-
 function labelForNode(node: GraphNode | SimpleGraphNode, compactLabels: boolean) {
   if ('kind' in node) {
     return compactLabels ? node.label : node.value || node.id;
@@ -420,4 +416,19 @@ function fallbackVisualForRdfNode(node: GraphNode) {
   }
   const egaType = node.compactTypes?.find((type) => type.startsWith('ega:'));
   return egaType ? cytoscapeDataForEgaType(egaType) : { shape: 'ellipse', fill: '#356f7c', stroke: '#244f58', borderWidth: 1, borderStyle: 'solid' };
+}
+
+function layoutOptionsForMode(mode: GraphMode, animate: boolean): cytoscape.LayoutOptions {
+  if (mode === 'ega') {
+    return { name: 'breadthfirst', animate, padding: 30 };
+  }
+  return {
+    name: 'cose',
+    animate,
+    animationDuration: animate ? 260 : undefined,
+    idealEdgeLength: 125,
+    nodeRepulsion: 6500,
+    padding: 30,
+    randomize: false
+  };
 }

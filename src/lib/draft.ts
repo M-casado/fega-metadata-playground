@@ -18,11 +18,15 @@ export function loadWorkingDraft(): WorkingDraft | null {
 }
 
 export function saveWorkingDraft(draft: WorkingDraft | null) {
-  if (!draft) {
-    localStorage.removeItem(WORKING_DRAFT_STORAGE_KEY);
-    return;
+  try {
+    if (!draft) {
+      localStorage.removeItem(WORKING_DRAFT_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(WORKING_DRAFT_STORAGE_KEY, JSON.stringify(draft));
+  } catch {
+    // Storage can fail in private browsing, quota limits, or restricted embeds.
   }
-  localStorage.setItem(WORKING_DRAFT_STORAGE_KEY, JSON.stringify(draft));
 }
 
 export function draftFromWrappedExample(source: WrappedExample, entities: EntitySummary[], sourceLabel = 'Imported example'): WorkingDraft {

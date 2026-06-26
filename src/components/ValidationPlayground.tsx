@@ -1,5 +1,5 @@
 import { CheckCircle2, Clipboard, Play } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { draftToValidationPayload, updateDraftSchemaAndData } from '../lib/draft';
 import { formatJson, loadJsonAsset } from '../lib/examples';
 import type { EntitySummary, ManifestExample, WorkingDraft, WrappedExample } from '../lib/types';
@@ -30,6 +30,7 @@ export function ValidationPlayground({ example, entities, draft, onDraftChange }
   const [result, setResult] = useState<ValidatorResult | null>(null);
   const [pending, setPending] = useState(false);
   const [copied, setCopied] = useState(false);
+  const lastCommittedDraftKey = useRef('');
 
   useEffect(() => {
     localStorage.setItem(ENDPOINT_STORAGE_KEY, endpoint);
@@ -44,14 +45,18 @@ export function ValidationPlayground({ example, entities, draft, onDraftChange }
       setSource(payload as WrappedExample);
       setSchemaValue(formatJson(payload.schema));
       setDataValue(formatJson(payload.data));
+      lastCommittedDraftKey.current = draftKey(payload.schema, payload.data);
       return undefined;
     }
     loadJsonAsset<WrappedExample>(example.assets.source)
       .then((value) => {
         if (!cancelled) {
+          const schema = value.schema ?? {};
+          const data = value.data ?? value;
           setSource(value);
-          setSchemaValue(formatJson(value.schema ?? {}));
-          setDataValue(formatJson(value.data ?? value));
+          setSchemaValue(formatJson(schema));
+          setDataValue(formatJson(data));
+          lastCommittedDraftKey.current = draftKey(schema, data);
         }
       })
       .catch((reason) => {
@@ -62,12 +67,24 @@ export function ValidationPlayground({ example, entities, draft, onDraftChange }
     return () => {
       cancelled = true;
     };
-  }, [draft, example]);
+  }, [draft?.id, example.id]);
 
   const parsedSchema = useMemo(() => parseJsonEditorValue(schemaValue), [schemaValue]);
   const parsedData = useMemo(() => parseJsonEditorValue(dataValue), [dataValue]);
   const payload = useMemo(() => (parsedSchema.ok && parsedData.ok ? { schema: parsedSchema.data, data: parsedData.data } : null), [parsedData, parsedSchema]);
   const curl = payload ? curlFor(endpoint, payload) : '';
+
+  useEffect(() => {
+    if (!payload) {
+      return;
+    }
+    const key = draftKey(payload.schema, payload.data);
+    if (key === lastCommittedDraftKey.current) {
+      return;
+    }
+    lastCommittedDraftKey.current = key;
+    onDraftChange(updateDraftSchemaAndData(draft, payload.schema, payload.data, entities));
+  }, [draft, entities, onDraftChange, payload]);
 
   async function validate() {
     setResult(null);
@@ -145,4 +162,8 @@ export function ValidationPlayground({ example, entities, draft, onDraftChange }
       </div>
     </section>
   );
+}
+
+function draftKey(schema: unknown, data: unknown) {
+  return JSON.stringify({ schema, data });
 }

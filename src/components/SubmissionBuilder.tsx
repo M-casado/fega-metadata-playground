@@ -22,6 +22,7 @@ export function SubmissionBuilder({ entities, selectedExample, draft, onDraftCha
   const [edgeTarget, setEdgeTarget] = useState('');
   const [edgePredicate, setEdgePredicate] = useState('hasPart');
   const [importMessage, setImportMessage] = useState('');
+  const [importError, setImportError] = useState('');
   const containerRef = useRef<HTMLDivElement | null>(null);
   const cyRef = useRef<Core | null>(null);
 
@@ -138,7 +139,11 @@ export function SubmissionBuilder({ entities, selectedExample, draft, onDraftCha
   );
 
   function commitBuilder(nextBuilder: BuilderDraft) {
-    onDraftChange(withBuilderDraft(draft, nextBuilder));
+    try {
+      onDraftChange(withBuilderDraft(draft, nextBuilder));
+    } catch (reason) {
+      setImportError(reason instanceof Error ? reason.message : String(reason));
+    }
   }
 
   function ensureDraftWithEntity(entity: EntitySummary): WorkingDraft {
@@ -245,12 +250,20 @@ export function SubmissionBuilder({ entities, selectedExample, draft, onDraftCha
     if (!selectedExample) {
       return;
     }
-    const source = await loadJsonAsset<WrappedExample>(selectedExample.assets.source);
-    const imported = draftFromWrappedExample(source, entities, selectedExample.name);
-    onDraftChange(imported);
-    setSelectedNodeId(imported.builder.nodes[0]?.id || null);
-    setSelectedEdgeId(null);
-    setImportMessage(`Imported ${imported.builder.nodes.length} node(s) from ${selectedExample.name}.`);
+    setImportError('');
+    setImportMessage('');
+    try {
+      const source = await loadJsonAsset<WrappedExample>(selectedExample.assets.source);
+      const imported = draftFromWrappedExample(source, entities, selectedExample.name);
+      onDraftChange(imported);
+      setSelectedNodeId(imported.builder.nodes[0]?.id || null);
+      setSelectedEdgeId(null);
+      setImportMessage(`Imported ${imported.builder.nodes.length} node(s) from ${selectedExample.name}.`);
+    } catch (reason) {
+      setSelectedNodeId(null);
+      setSelectedEdgeId(null);
+      setImportError(reason instanceof Error ? reason.message : String(reason));
+    }
   }
 
   return (
@@ -332,6 +345,7 @@ export function SubmissionBuilder({ entities, selectedExample, draft, onDraftCha
           </button>
         </div>
         {importMessage ? <p className="muted">{importMessage}</p> : null}
+        {importError ? <div className="warningLine">Import error: {importError}</div> : null}
         {unrepresentedNodes > 0 ? (
           <div className="warningLine">
             {unrepresentedNodes} unconnected draft node(s) are visual only until connected to the validation JSON structure.
