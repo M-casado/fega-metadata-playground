@@ -1,0 +1,18 @@
+node_modules
+node_modules/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+
+# Local schema checkout used by the playground generator
+.cache/
+
+# Generated static playground assets
+public/generated/
+
+# Local environment overrides
+.env
+.env.local
